@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import json
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ class Storage:
 
     def __init__(self, db_path=DB_PATH):
         self.db_path = str(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_tables()
 
     def _get_conn(self):
