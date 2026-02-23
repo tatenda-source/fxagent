@@ -7,13 +7,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import streamlit as st
 
 st.set_page_config(
-    page_title="fxagent - Forex AI Trading",
+    page_title="momoFX - Forex AI Trading",
     page_icon="$",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.sidebar.title("fxagent")
+st.sidebar.title("momoFX")
 st.sidebar.caption("Forex AI Trading System")
 
 page = st.sidebar.radio(

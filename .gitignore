@@ -8,7 +8,7 @@ venv/
 .venv/
 
 # Project data
-db/fxagent.db
+db/momofx.db
 trained_models/*.pt
 trained_models/*.pth
 

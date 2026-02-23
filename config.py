@@ -2,7 +2,7 @@ from pathlib import Path
 
 # Paths
 BASE_DIR = Path(__file__).parent
-DB_PATH = BASE_DIR / "db" / "fxagent.db"
+DB_PATH = BASE_DIR / "db" / "momofx.db"
 MODEL_DIR = BASE_DIR / "trained_models"
 
 # Forex pairs (Yahoo Finance format uses "=X" suffix)
