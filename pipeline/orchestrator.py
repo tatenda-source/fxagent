@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
 
@@ -41,9 +42,21 @@ class Orchestrator:
             logger.error("No data fetched. Aborting pipeline.")
             return context
 
-        # Stage 2: Detect market regimes
-        logger.info("Detecting market regimes...")
-        regimes = MarketRegime.detect_all(context["ohlcv_data"])
+        # Stages 2-4: Run regime detection, correlation, and analysis in parallel
+        logger.info("Running regime detection, correlation, and analysis in parallel...")
+        ohlcv_data = context["ohlcv_data"]
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            regime_future = executor.submit(MarketRegime.detect_all, ohlcv_data)
+            corr_future = executor.submit(
+                self.portfolio_manager.compute_correlation_matrix, ohlcv_data
+            )
+            analysis_future = executor.submit(self.analysis_agent.execute, context)
+
+            regimes = regime_future.result()
+            corr_matrix = corr_future.result()
+            analysis_output = analysis_future.result()
+
         context["regimes"] = regimes
         for pair, regime in regimes.items():
             logger.info(
@@ -52,16 +65,11 @@ class Orchestrator:
                 f"trend={regime['trend_direction']})"
             )
 
-        # Stage 3: Compute correlation matrix
-        logger.info("Computing correlation matrix...")
-        corr_matrix = self.portfolio_manager.compute_correlation_matrix(context["ohlcv_data"])
         context["correlation_matrix"] = corr_matrix
         clusters = self.portfolio_manager.get_correlation_clusters()
         if clusters:
             logger.info(f"  Correlation clusters: {clusters}")
 
-        # Stage 4: Analyze (technical indicators + S/R)
-        analysis_output = self.analysis_agent.execute(context)
         context.update(analysis_output)
 
         # Stage 5: Predict

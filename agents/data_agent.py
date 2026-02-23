@@ -8,7 +8,7 @@ from config import ALL_PAIRS, DEFAULT_PERIOD, DEFAULT_INTERVAL, INTRADAY_INTERVA
 
 class DataAgent(BaseAgent):
     """Agent 1: Fetches forex data, cleans it, and stores in SQLite.
-    Supports both daily and intraday data fetching."""
+    Uses batch/parallel fetching for speed."""
 
     def __init__(self):
         super().__init__(name="DataAgent")
@@ -21,25 +21,26 @@ class DataAgent(BaseAgent):
         interval = input_data.get("interval", DEFAULT_INTERVAL)
         fetch_intraday = input_data.get("fetch_intraday", False)
 
-        output = {}
-        intraday_output = {}
+        # Batch fetch all daily data at once
+        raw_data = self.fetcher.fetch_all_pairs(pairs, period, interval)
 
-        for pair in pairs:
-            # Daily data (for training + indicators)
-            df = self.fetcher.fetch_historical(pair, period, interval)
+        output = {}
+        for pair, df in raw_data.items():
+            df = self._clean(df)
             if df.empty:
                 self.logger.warning(f"No data returned for {pair}")
                 continue
-            df = self._clean(df)
             self.storage.save_ohlcv(pair, df, interval)
             output[pair] = df
             self.logger.info(f"Fetched {len(df)} daily rows for {pair}")
 
-            # Intraday data (for faster signal generation)
-            if fetch_intraday:
-                intra_df = self.fetcher.fetch_latest(pair, interval=INTRADAY_INTERVAL)
+        # Batch fetch intraday data in parallel
+        intraday_output = {}
+        if fetch_intraday:
+            raw_intraday = self.fetcher.fetch_all_latest(pairs, interval=INTRADAY_INTERVAL)
+            for pair, intra_df in raw_intraday.items():
+                intra_df = self._clean(intra_df)
                 if not intra_df.empty:
-                    intra_df = self._clean(intra_df)
                     self.storage.save_ohlcv(pair, intra_df, INTRADAY_INTERVAL)
                     intraday_output[pair] = intra_df
                     self.logger.info(f"Fetched {len(intra_df)} intraday rows for {pair}")

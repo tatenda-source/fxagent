@@ -1,4 +1,5 @@
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agents.base_agent import BaseAgent
 from data.storage import Storage
@@ -10,7 +11,8 @@ from config import (
 
 class RecommendationAgent(BaseAgent):
     """Agent 4: Generates buy/sell signals with SL, TP, and position sizing.
-    Now regime-aware — adjusts parameters based on market conditions."""
+    Now regime-aware — adjusts parameters based on market conditions.
+    Evaluates signals in parallel, then batch-writes to DB."""
 
     def __init__(self, account_size: float = DEFAULT_ACCOUNT_SIZE):
         super().__init__(name="RecommendationAgent")
@@ -23,26 +25,39 @@ class RecommendationAgent(BaseAgent):
         sr_levels = input_data["sr_levels"]
         regimes = input_data.get("regimes", {})
 
+        # Evaluate signals in parallel
         signals = []
-        for pair, pred in predictions.items():
-            if pair not in analyzed_data:
-                continue
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {}
+            for pair, pred in predictions.items():
+                if pair not in analyzed_data:
+                    continue
+                df = analyzed_data[pair]
+                latest = df.iloc[-1]
+                levels = sr_levels.get(pair, {"support": [], "resistance": []})
+                regime = regimes.get(pair, {})
+                future = executor.submit(self._evaluate, pair, pred, latest, levels, regime)
+                futures[future] = pair
 
-            df = analyzed_data[pair]
-            latest = df.iloc[-1]
-            levels = sr_levels.get(pair, {"support": [], "resistance": []})
-            regime = regimes.get(pair, {})
+            for future in as_completed(futures):
+                pair = futures[future]
+                try:
+                    signal = future.result()
+                    if signal:
+                        signals.append(signal)
+                except Exception as e:
+                    self.logger.error(f"Signal evaluation failed for {pair}: {e}")
 
-            signal = self._evaluate(pair, pred, latest, levels, regime)
-            if signal:
-                signals.append(signal)
-                self.storage.save_signal(signal)
-                self.logger.info(
-                    f"{pair}: {signal['signal_type']} signal | "
-                    f"confidence={signal['confidence']:.2f} | "
-                    f"SL={signal['stop_loss']:.5f} TP={signal['take_profit']:.5f} | "
-                    f"regime={regime.get('regime', 'unknown')}"
-                )
+        # Batch write signals to DB
+        for signal in signals:
+            self.storage.save_signal(signal)
+            regime = regimes.get(signal["pair"], {})
+            self.logger.info(
+                f"{signal['pair']}: {signal['signal_type']} signal | "
+                f"confidence={signal['confidence']:.2f} | "
+                f"SL={signal['stop_loss']:.5f} TP={signal['take_profit']:.5f} | "
+                f"regime={regime.get('regime', 'unknown')}"
+            )
 
         return {"signals": signals}
 

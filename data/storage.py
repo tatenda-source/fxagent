@@ -17,7 +17,9 @@ class Storage:
         self._init_tables()
 
     def _get_conn(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
 
     def _init_tables(self):
         conn = self._get_conn()

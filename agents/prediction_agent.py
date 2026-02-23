@@ -1,4 +1,5 @@
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 
@@ -10,7 +11,8 @@ from config import MODEL_DIR, EPOCHS, BATCH_SIZE, LEARNING_RATE
 
 
 class PredictionAgent(BaseAgent):
-    """Agent 3: Trains/loads LSTM models and predicts next close price per pair."""
+    """Agent 3: Trains/loads LSTM models and predicts next close price per pair.
+    Uses parallel inference when models already exist."""
 
     def __init__(self):
         super().__init__(name="PredictionAgent")
@@ -21,13 +23,19 @@ class PredictionAgent(BaseAgent):
         analyzed_data = input_data["analyzed_data"]
         predictions = {}
 
-        for pair, df in analyzed_data.items():
-            try:
-                pred = self._predict_pair(pair, df)
-                if pred:
-                    predictions[pair] = pred
-            except Exception as e:
-                self.logger.error(f"Prediction failed for {pair}: {e}")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(self._predict_pair, pair, df): pair
+                for pair, df in analyzed_data.items()
+            }
+            for future in as_completed(futures):
+                pair = futures[future]
+                try:
+                    pred = future.result()
+                    if pred:
+                        predictions[pair] = pred
+                except Exception as e:
+                    self.logger.error(f"Prediction failed for {pair}: {e}")
 
         return {"predictions": predictions}
 
