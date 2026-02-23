@@ -18,7 +18,8 @@ st.sidebar.caption("Forex AI Trading System")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["Overview", "Pair Detail", "Active Signals", "Backtesting", "Agent Logs"],
+    ["Overview", "Pair Detail", "Active Signals", "Portfolio Risk",
+     "Market Regimes", "Backtesting", "Agent Logs"],
 )
 
 if page == "Overview":
@@ -29,6 +30,12 @@ elif page == "Pair Detail":
     render()
 elif page == "Active Signals":
     from dashboard.pages.signals import render
+    render()
+elif page == "Portfolio Risk":
+    from dashboard.pages.portfolio import render
+    render()
+elif page == "Market Regimes":
+    from dashboard.pages.regimes import render
     render()
 elif page == "Backtesting":
     from dashboard.pages.backtest import render

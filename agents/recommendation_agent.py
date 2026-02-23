@@ -9,7 +9,8 @@ from config import (
 
 
 class RecommendationAgent(BaseAgent):
-    """Agent 4: Generates buy/sell signals with SL, TP, and position sizing."""
+    """Agent 4: Generates buy/sell signals with SL, TP, and position sizing.
+    Now regime-aware — adjusts parameters based on market conditions."""
 
     def __init__(self, account_size: float = DEFAULT_ACCOUNT_SIZE):
         super().__init__(name="RecommendationAgent")
@@ -20,6 +21,7 @@ class RecommendationAgent(BaseAgent):
         predictions = input_data["predictions"]
         analyzed_data = input_data["analyzed_data"]
         sr_levels = input_data["sr_levels"]
+        regimes = input_data.get("regimes", {})
 
         signals = []
         for pair, pred in predictions.items():
@@ -29,22 +31,37 @@ class RecommendationAgent(BaseAgent):
             df = analyzed_data[pair]
             latest = df.iloc[-1]
             levels = sr_levels.get(pair, {"support": [], "resistance": []})
+            regime = regimes.get(pair, {})
 
-            signal = self._evaluate(pair, pred, latest, levels)
+            signal = self._evaluate(pair, pred, latest, levels, regime)
             if signal:
                 signals.append(signal)
                 self.storage.save_signal(signal)
                 self.logger.info(
                     f"{pair}: {signal['signal_type']} signal | "
                     f"confidence={signal['confidence']:.2f} | "
-                    f"SL={signal['stop_loss']:.5f} TP={signal['take_profit']:.5f}"
+                    f"SL={signal['stop_loss']:.5f} TP={signal['take_profit']:.5f} | "
+                    f"regime={regime.get('regime', 'unknown')}"
                 )
 
         return {"signals": signals}
 
-    def _evaluate(self, pair: str, pred: dict, latest, levels: dict) -> Optional[dict]:
+    def _evaluate(self, pair: str, pred: dict, latest, levels: dict,
+                  regime: dict) -> Optional[dict]:
         score = 0.0
         reasons = []
+
+        # Get regime adjustments (default to neutral if no regime data)
+        adjustments = regime.get("strategy_adjustments", {})
+        min_score_adj = adjustments.get("min_score_adj", 0.0)
+        sl_mult_adj = adjustments.get("sl_multiplier_adj", 1.0)
+        tp_mult_adj = adjustments.get("tp_multiplier_adj", 1.0)
+        size_adj = adjustments.get("position_size_adj", 1.0)
+
+        # Tag regime in reasons
+        regime_name = regime.get("regime", "unknown")
+        if regime_name != "unknown":
+            reasons.append(f"Regime: {regime_name} (ADX={regime.get('adx', 0):.1f})")
 
         # 1. ML prediction direction
         if pred["confidence"] > 0.3:
@@ -96,24 +113,39 @@ class RecommendationAgent(BaseAgent):
                 reasons.append(f"Near resistance level {res:.5f}")
                 break
 
-        # Minimum confluence threshold
-        if score < 2.0:
+        # 7. Regime-specific bonus: trend alignment in trending markets
+        if regime_name == "trending":
+            trend_dir = regime.get("trend_direction", "flat")
+            if (pred["direction"] == "UP" and trend_dir == "up") or \
+               (pred["direction"] == "DOWN" and trend_dir == "down"):
+                score += 0.5
+                reasons.append(f"Aligned with {trend_dir}trend (ADX={regime.get('adx', 0):.0f})")
+
+        # Minimum confluence threshold — adjusted by regime
+        min_score = 2.0 + min_score_adj
+        if score < min_score:
             return None
 
         signal_type = "BUY" if pred["direction"] == "UP" else "SELL"
         atr = latest["ATR"]
 
-        # Risk management
+        # Apply regime-adjusted SL/TP multipliers
+        effective_sl_mult = ATR_SL_MULTIPLIER * sl_mult_adj
+        effective_tp_mult = ATR_TP_MULTIPLIER * tp_mult_adj
+
         if signal_type == "BUY":
-            stop_loss = current - (atr * ATR_SL_MULTIPLIER)
-            take_profit = current + (atr * ATR_TP_MULTIPLIER)
+            stop_loss = current - (atr * effective_sl_mult)
+            take_profit = current + (atr * effective_tp_mult)
         else:
-            stop_loss = current + (atr * ATR_SL_MULTIPLIER)
-            take_profit = current - (atr * ATR_TP_MULTIPLIER)
+            stop_loss = current + (atr * effective_sl_mult)
+            take_profit = current - (atr * effective_tp_mult)
 
         risk_per_unit = abs(current - stop_loss)
         max_loss = self.account_size * MAX_RISK_PER_TRADE
         position_size = max_loss / risk_per_unit if risk_per_unit > 0 else 0
+
+        # Apply regime position size adjustment
+        position_size *= size_adj
 
         return {
             "pair": pair,
@@ -125,4 +157,5 @@ class RecommendationAgent(BaseAgent):
             "position_size": round(position_size, 2),
             "reasons": reasons,
             "predicted_price": pred["predicted_price"],
+            "regime": regime_name,
         }

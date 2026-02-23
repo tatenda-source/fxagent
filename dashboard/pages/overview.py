@@ -20,24 +20,24 @@ def render():
         cols = st.columns(per_row)
         for i, pair in enumerate(row_pairs):
             with cols[i]:
-            df = storage.get_ohlcv(pair)
-            if df.empty:
-                try:
-                    df = fetcher.fetch_historical(pair, period="5d", interval="1d")
-                except Exception:
-                    pass
+                df = storage.get_ohlcv(pair)
+                if df.empty:
+                    try:
+                        df = fetcher.fetch_historical(pair, period="5d", interval="1d")
+                    except Exception:
+                        pass
 
-            if not df.empty:
-                current = df["Close"].iloc[-1]
-                prev = df["Close"].iloc[-2] if len(df) > 1 else current
-                change = ((current - prev) / prev) * 100
-                st.metric(
-                    label=PAIR_DISPLAY.get(pair, pair),
-                    value=f"{current:.4f}",
-                    delta=f"{change:+.2f}%",
-                )
-            else:
-                st.metric(label=PAIR_DISPLAY.get(pair, pair), value="N/A")
+                if not df.empty:
+                    current = df["Close"].iloc[-1]
+                    prev = df["Close"].iloc[-2] if len(df) > 1 else current
+                    change = ((current - prev) / prev) * 100
+                    st.metric(
+                        label=PAIR_DISPLAY.get(pair, pair),
+                        value=f"{current:.4f}",
+                        delta=f"{change:+.2f}%",
+                    )
+                else:
+                    st.metric(label=PAIR_DISPLAY.get(pair, pair), value="N/A")
 
     st.divider()
 

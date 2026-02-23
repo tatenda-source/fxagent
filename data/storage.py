@@ -97,7 +97,7 @@ class Storage:
         df = pd.read_sql_query(query, conn, params=params)
         conn.close()
         if not df.empty:
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
             df.set_index("timestamp", inplace=True)
             df.columns = ["Open", "High", "Low", "Close", "Volume"]
         return df

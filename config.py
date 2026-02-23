@@ -74,5 +74,17 @@ DEFAULT_ACCOUNT_SIZE = 10000
 ATR_SL_MULTIPLIER = 1.5
 ATR_TP_MULTIPLIER = 2.5
 
+# Portfolio Risk Management
+MAX_PORTFOLIO_RISK = 0.06           # Max 6% total account risk across all open positions
+MAX_CORRELATED_POSITIONS = 3        # Max positions in same correlation cluster
+CORRELATION_THRESHOLD = 0.7         # Pairs with |corr| > 0.7 are considered correlated
+CORRELATION_LOOKBACK = 60           # Days to compute rolling correlation
+
+# Regime Detection
+REGIME_ADX_PERIOD = 14              # ADX period for trend strength
+REGIME_ADX_TRENDING = 25            # ADX > 25 = trending market
+REGIME_VOLATILITY_LOOKBACK = 20     # Days for volatility regime
+REGIME_VOLATILITY_HIGH_MULT = 1.5   # ATR > 1.5x median = high volatility
+
 # Scheduling
 UPDATE_INTERVAL_MINUTES = 60
