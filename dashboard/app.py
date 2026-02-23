@@ -16,6 +16,21 @@ st.set_page_config(
 st.sidebar.title("momoFX")
 st.sidebar.caption("Forex AI Trading System")
 
+st.sidebar.divider()
+
+if st.sidebar.button("Run Pipeline", type="primary", use_container_width=True):
+    from pipeline.orchestrator import Orchestrator
+    orchestrator = Orchestrator()
+    with st.spinner("Running pipeline — fetching data, analyzing, predicting..."):
+        try:
+            result = orchestrator.run_full_pipeline()
+            signal_count = len(result.get("signals", []))
+            st.sidebar.success(f"Pipeline complete. {signal_count} signals generated.")
+        except Exception as e:
+            st.sidebar.error(f"Pipeline failed: {e}")
+
+st.sidebar.divider()
+
 page = st.sidebar.radio(
     "Navigation",
     ["Overview", "Pair Detail", "Active Signals", "Portfolio Risk",
