@@ -7,12 +7,12 @@ from agents.base_agent import BaseAgent
 from models.lstm_model import ForexLSTM, LSTMTrainer
 from models.model_utils import prepare_sequences, inverse_scale_close
 from data.storage import Storage
-from config import MODEL_DIR, EPOCHS, BATCH_SIZE, LEARNING_RATE
+from config import MODEL_DIR, EPOCHS, BATCH_SIZE, LEARNING_RATE, MODEL_VERSION
 
 
 class PredictionAgent(BaseAgent):
-    """Agent 3: Trains/loads LSTM models and predicts next close price per pair.
-    Uses parallel inference when models already exist."""
+    """Agent 3: Trains/loads attention-LSTM models and predicts next close price.
+    Uses MC Dropout for uncertainty-based confidence scoring."""
 
     def __init__(self):
         super().__init__(name="PredictionAgent")
@@ -50,38 +50,45 @@ class PredictionAgent(BaseAgent):
         model = ForexLSTM(input_size=num_features)
         trainer = LSTMTrainer(model, lr=LEARNING_RATE)
 
-        model_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}_lstm.pt")
+        model_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}_lstm_v2.pt")
 
         if os.path.exists(model_path):
-            trainer.load(model_path)
-            self.logger.info(f"Loaded existing model for {pair}")
+            try:
+                trainer.load(model_path)
+                self.logger.info(f"Loaded v2 model for {pair}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load model for {pair}: {e}. Retraining...")
+                os.remove(model_path)
+                self._train_and_save(trainer, X_train, y_train, model_path, pair)
         else:
-            self.logger.info(f"Training new model for {pair}...")
-            losses = trainer.train(X_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE)
-            trainer.save(model_path)
-            self.logger.info(f"Model saved. Final loss: {losses[-1]:.6f}")
+            self._train_and_save(trainer, X_train, y_train, model_path, pair)
 
         # Predict using the last available sequence
         last_sequence = X_test[-1:] if len(X_test) > 0 else X_train[-1:]
-        pred_scaled = trainer.predict(last_sequence)[0]
+
+        # MC Dropout for uncertainty estimation
+        mean_pred, std_pred = trainer.predict_with_uncertainty(last_sequence)
+        pred_scaled = mean_pred[0]
+        pred_uncertainty = std_pred[0]
 
         predicted_price = inverse_scale_close(pred_scaled, scaler, num_features)
         current_price = float(df["Close"].iloc[-1])
 
         direction = "UP" if predicted_price > current_price else "DOWN"
         change_pct = abs(predicted_price - current_price) / current_price
-        confidence = min(0.95, change_pct * 20)
+        confidence = self._compute_confidence(change_pct, pred_uncertainty)
 
         self.logger.info(
             f"{pair}: current={current_price:.5f}, predicted={predicted_price:.5f}, "
-            f"direction={direction}, confidence={confidence:.2f}"
+            f"direction={direction}, confidence={confidence:.2f}, "
+            f"uncertainty={pred_uncertainty:.6f}"
         )
 
         self.storage.save_prediction({
             "pair": pair,
             "predicted_price": predicted_price,
             "prediction_horizon": "1d",
-            "model_version": "lstm_v1",
+            "model_version": MODEL_VERSION,
         })
 
         return {
@@ -90,4 +97,28 @@ class PredictionAgent(BaseAgent):
             "direction": direction,
             "confidence": confidence,
             "change_pct": change_pct,
+            "uncertainty": pred_uncertainty,
         }
+
+    def _train_and_save(self, trainer, X_train, y_train, model_path, pair):
+        self.logger.info(f"Training v2 model for {pair}...")
+        result = trainer.train(X_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE)
+        trainer.save(model_path)
+        final_train = result["train_losses"][-1]
+        final_val = result["val_losses"][-1] if result["val_losses"] else "N/A"
+        self.logger.info(
+            f"Model saved for {pair}. "
+            f"Stopped epoch: {result['stopped_epoch']}, "
+            f"Train loss: {final_train:.6f}, Val loss: {final_val}"
+        )
+
+    @staticmethod
+    def _compute_confidence(change_pct: float, uncertainty: float) -> float:
+        """Compute confidence from price change magnitude and MC dropout uncertainty.
+
+        Low uncertainty + large change = high confidence.
+        High uncertainty = low confidence regardless of change."""
+        signal_strength = min(1.0, change_pct * 15)
+        uncertainty_penalty = min(1.0, uncertainty / 0.03)
+        confidence = signal_strength * (1.0 - uncertainty_penalty)
+        return max(0.05, min(0.95, confidence))

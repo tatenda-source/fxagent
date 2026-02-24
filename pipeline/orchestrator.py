@@ -109,10 +109,11 @@ class Orchestrator:
         if feedback.get("retrain_pairs"):
             logger.warning(f"Retraining requested for: {feedback['retrain_pairs']}")
             for pair in feedback["retrain_pairs"]:
-                model_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}_lstm.pt")
-                if os.path.exists(model_path):
-                    os.remove(model_path)
-                    logger.info(f"Deleted model for {pair} — will retrain on next run")
+                for suffix in ("_lstm_v2.pt", "_lstm.pt"):
+                    model_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}{suffix}")
+                    if os.path.exists(model_path):
+                        os.remove(model_path)
+                        logger.info(f"Deleted model {suffix} for {pair} — will retrain on next run")
 
         logger.info(
             f"=== Pipeline complete. "
