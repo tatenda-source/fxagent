@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Optional
@@ -8,6 +9,9 @@ from config import (
     CORRELATION_THRESHOLD, CORRELATION_LOOKBACK, MAX_RISK_PER_TRADE,
     DEFAULT_ACCOUNT_SIZE,
 )
+
+MAX_DRAWDOWN_PCT = 0.15
+logger = logging.getLogger(__name__)
 
 
 class PortfolioRiskManager:
@@ -90,6 +94,19 @@ class PortfolioRiskManager:
             "risk_available": max(0, MAX_PORTFOLIO_RISK - total_risk),
         }
 
+    def check_drawdown_limit(self, current_equity: float, peak_equity: float) -> bool:
+        if peak_equity <= 0:
+            return False
+        drawdown = (peak_equity - current_equity) / peak_equity
+        if drawdown > MAX_DRAWDOWN_PCT:
+            logger.critical(
+                f"Max drawdown breached: {drawdown:.1%} drawdown "
+                f"(current={current_equity:.2f}, peak={peak_equity:.2f}). "
+                f"All new signals rejected."
+            )
+            return True
+        return False
+
     def filter_signals(self, signals: List[Dict], ohlcv_data: Dict[str, pd.DataFrame]) -> List[Dict]:
         """
         Filter signals through portfolio risk constraints.
@@ -107,6 +124,11 @@ class PortfolioRiskManager:
         open_signals = self.storage.get_open_signals()
         open_pairs = set(open_signals["pair"].tolist()) if not open_signals.empty else set()
 
+        open_pair_directions: Dict[str, str] = {}
+        if not open_signals.empty:
+            for _, sig in open_signals.iterrows():
+                open_pair_directions[sig["pair"]] = sig.get("signal_type", "")
+
         approved = []
         rejected = []
 
@@ -119,9 +141,16 @@ class PortfolioRiskManager:
             pair = signal["pair"]
             reasons = []
 
-            # Check 1: Already have an open position on this pair
+            # Check 1: Already have an open position on this pair in the same direction
             if pair in open_pairs:
-                reasons.append(f"Already have open position on {PAIR_DISPLAY.get(pair, pair)}")
+                existing_dir = open_pair_directions.get(pair, "")
+                if existing_dir == signal.get("signal_type", ""):
+                    reasons.append(
+                        f"Duplicate signal: already have open {existing_dir} on "
+                        f"{PAIR_DISPLAY.get(pair, pair)}"
+                    )
+                else:
+                    reasons.append(f"Already have open position on {PAIR_DISPLAY.get(pair, pair)}")
 
             # Check 2: Portfolio risk limit
             signal_risk = abs(signal["entry_price"] - signal["stop_loss"]) * signal.get("position_size", 0)

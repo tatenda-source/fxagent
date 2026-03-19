@@ -1,8 +1,12 @@
+import logging
+
 import numpy as np
 
 from models.lstm_model import ForexLSTM, LSTMTrainer
 from models.gbm_model import ForexGBM
 from config import LEARNING_RATE, EPOCHS, BATCH_SIZE, VALIDATION_SPLIT
+
+logger = logging.getLogger(__name__)
 
 
 class EnsemblePredictor:
@@ -51,6 +55,12 @@ class EnsemblePredictor:
             self.lstm_weight = 0.5
             self.gbm_weight = 0.5
 
+        weight_sum = self.lstm_weight + self.gbm_weight
+        if abs(weight_sum - 1.0) > 1e-6:
+            logger.warning(f"Ensemble weights sum to {weight_sum:.6f}, renormalizing")
+            self.lstm_weight /= weight_sum
+            self.gbm_weight /= weight_sum
+
         return {
             "lstm_result": lstm_result,
             "gbm_result": gbm_result,
@@ -64,21 +74,33 @@ class EnsemblePredictor:
         """Ensemble prediction with uncertainty from both model disagreement and MC dropout.
 
         Returns (mean_return, uncertainty) as numpy arrays."""
-        # LSTM: MC dropout gives mean + std
-        lstm_mean, lstm_std = self.lstm_trainer.predict_with_uncertainty(X)
+        lstm_mean, lstm_std, gbm_pred = None, None, None
 
-        # GBM: single deterministic prediction
-        gbm_pred = self.gbm_model.predict(X)
+        try:
+            lstm_mean, lstm_std = self.lstm_trainer.predict_with_uncertainty(X)
+        except Exception as e:
+            logger.warning(f"LSTM predict failed, falling back to GBM-only: {e}")
 
-        # Weighted ensemble mean
-        ensemble_mean = self.lstm_weight * lstm_mean + self.gbm_weight * gbm_pred
+        try:
+            gbm_pred = self.gbm_model.predict(X)
+        except Exception as e:
+            logger.warning(f"GBM predict failed, falling back to LSTM-only: {e}")
 
-        # Uncertainty: combine MC dropout std + model disagreement
-        model_disagreement = np.abs(lstm_mean - gbm_pred)
-        ensemble_uncertainty = (
-            self.lstm_weight * lstm_std +
-            self.gbm_weight * model_disagreement * 0.5
-        )
+        if lstm_mean is not None and gbm_pred is not None:
+            ensemble_mean = self.lstm_weight * lstm_mean + self.gbm_weight * gbm_pred
+            model_disagreement = np.abs(lstm_mean - gbm_pred)
+            ensemble_uncertainty = (
+                self.lstm_weight * lstm_std +
+                self.gbm_weight * model_disagreement * 0.5
+            )
+        elif lstm_mean is not None:
+            ensemble_mean = lstm_mean
+            ensemble_uncertainty = lstm_std
+        elif gbm_pred is not None:
+            ensemble_mean = gbm_pred
+            ensemble_uncertainty = np.full_like(gbm_pred, 0.01)
+        else:
+            raise RuntimeError("Both LSTM and GBM predictions failed")
 
         return ensemble_mean, ensemble_uncertainty
 
@@ -93,24 +115,20 @@ class EnsemblePredictor:
 
         direction = "UP" if pred_return > 0 else "DOWN"
 
-        # Confidence based on:
-        # 1. Agreement between models (both say same direction)
-        lstm_mean, _ = self.lstm_trainer.predict_with_uncertainty(X)
-        gbm_pred = self.gbm_model.predict(X)
+        models_agree = False
+        try:
+            lstm_mean, _ = self.lstm_trainer.predict_with_uncertainty(X)
+            gbm_pred = self.gbm_model.predict(X)
+            lstm_dir = "UP" if float(lstm_mean[0]) > 0 else "DOWN"
+            gbm_dir = "UP" if float(gbm_pred[0]) > 0 else "DOWN"
+            models_agree = lstm_dir == gbm_dir
+        except Exception:
+            pass
 
-        lstm_dir = "UP" if float(lstm_mean[0]) > 0 else "DOWN"
-        gbm_dir = "UP" if float(gbm_pred[0]) > 0 else "DOWN"
-        models_agree = lstm_dir == gbm_dir
-
-        # 2. Signal magnitude relative to uncertainty (signal-to-noise ratio)
         abs_return = abs(pred_return)
         snr = abs_return / (pred_uncertainty + 1e-8)
 
-        # Confidence formula:
-        # - Base: SNR scaled (0-1), higher SNR = more confident
-        # - Bonus: +0.15 if both models agree on direction
-        # - Floor: 0.10, Cap: 0.95
-        base_conf = min(1.0, snr / 3.0)  # SNR of 3 = full confidence
+        base_conf = min(1.0, snr / 3.0)
         agreement_bonus = 0.15 if models_agree else 0.0
         confidence = base_conf + agreement_bonus
 

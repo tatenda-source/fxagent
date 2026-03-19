@@ -1,5 +1,9 @@
+import pandas as pd
+
 from agents.base_agent import BaseAgent
 from data.storage import Storage
+
+_REQUIRED_SIGNAL_FIELDS = ("entry_price", "predicted_price", "stop_loss", "take_profit", "signal_type")
 
 
 class LoggingAgent(BaseAgent):
@@ -10,30 +14,39 @@ class LoggingAgent(BaseAgent):
         self.storage = Storage()
 
     def run(self, input_data: dict) -> dict:
-        ohlcv = input_data.get("ohlcv_data", {})
-        closed_signals = self._evaluate_open_signals(ohlcv)
-        accuracy = self._compute_prediction_accuracy()
-        retrain_pairs = [pair for pair, acc in accuracy.items() if acc < 0.45]
+        try:
+            ohlcv = input_data.get("ohlcv_data", {})
+            open_signals = self.storage.get_open_signals()
+            closed_signals = self._evaluate_open_signals(ohlcv, open_signals)
+            accuracy = self._compute_prediction_accuracy()
+            retrain_pairs = [pair for pair, acc in accuracy.items() if acc < 0.45]
 
-        self.logger.info(
-            f"Closed {len(closed_signals)} signals. "
-            f"Retrain needed for: {retrain_pairs}"
-        )
+            self.logger.info(
+                f"Logging complete: {len(open_signals)} signals evaluated, "
+                f"{len(closed_signals)} closed, "
+                f"{len(retrain_pairs)} flagged for retraining"
+            )
 
-        return {
-            "feedback": {
-                "retrain_pairs": retrain_pairs,
-                "accuracy": accuracy,
-                "closed_signals": closed_signals,
+            return {
+                "feedback": {
+                    "retrain_pairs": retrain_pairs,
+                    "accuracy": accuracy,
+                    "closed_signals": closed_signals,
+                }
             }
-        }
+        except Exception as exc:
+            self.logger.error(f"LoggingAgent failed: {exc}")
+            return {"feedback": {"retrain_pairs": [], "accuracy": {}, "closed_signals": []}}
 
-    def _evaluate_open_signals(self, ohlcv: dict) -> list:
+    def _evaluate_open_signals(self, ohlcv: dict, open_signals: pd.DataFrame) -> list:
         """Check if any open signal hit SL or TP."""
-        open_signals = self.storage.get_open_signals()
         closed = []
 
         for _, sig in open_signals.iterrows():
+            if any(pd.isna(sig.get(f)) for f in _REQUIRED_SIGNAL_FIELDS):
+                self.logger.warning(f"Skipping malformed signal id={sig.get('id')}: missing required fields")
+                continue
+
             pair = sig["pair"]
             if pair not in ohlcv:
                 continue

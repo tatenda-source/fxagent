@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,6 +13,8 @@ from config import (
     EARLY_STOPPING_PATIENCE, EARLY_STOPPING_MIN_DELTA,
     VALIDATION_SPLIT, MC_DROPOUT_PASSES,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class DirectionalMSELoss(nn.Module):
@@ -160,21 +164,34 @@ class LSTMTrainer:
         stopped_epoch = epochs
         best_dir_acc = 0.0
 
+        nan_abort = False
         for epoch in range(epochs):
             # Training
             self.model.train()
             epoch_loss = 0.0
+            batches_used = 0
             for X_batch, y_batch in train_loader:
+                if torch.isnan(X_batch).any() or torch.isnan(y_batch).any():
+                    logger.warning("NaN detected in input batch, skipping")
+                    continue
                 self.optimizer.zero_grad()
                 pred = self.model(X_batch)
                 loss = self.criterion(pred, y_batch)
+                if torch.isnan(loss) or torch.isinf(loss):
+                    logger.error("Loss became NaN/inf — gradient explosion detected, restoring best weights and stopping")
+                    nan_abort = True
+                    break
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), max_norm=GRADIENT_CLIP_MAX_NORM,
                 )
                 self.optimizer.step()
                 epoch_loss += loss.item()
-            train_losses.append(epoch_loss / len(train_loader))
+                batches_used += 1
+            if nan_abort:
+                stopped_epoch = epoch + 1
+                break
+            train_losses.append(epoch_loss / max(batches_used, 1))
 
             # Validation
             if val_loader is not None:

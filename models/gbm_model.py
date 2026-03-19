@@ -1,5 +1,9 @@
+import logging
+
 import numpy as np
 import lightgbm as lgb
+
+logger = logging.getLogger(__name__)
 
 
 class ForexGBM:
@@ -57,6 +61,14 @@ class ForexGBM:
     def train(self, X_train: np.ndarray, y_train: np.ndarray,
               X_val: np.ndarray = None, y_val: np.ndarray = None) -> dict:
         """Train LightGBM on flattened sequence features."""
+        if X_train is None or len(X_train) == 0:
+            logger.warning("Empty training data for GBM, skipping training")
+            return {"direction_accuracy": 0.0, "best_iteration": 0}
+
+        if len(np.unique(y_train)) < 2:
+            logger.warning("Degenerate training labels (all same value) for GBM, skipping training")
+            return {"direction_accuracy": 0.0, "best_iteration": 0}
+
         X_flat = self._flatten_sequences(X_train)
 
         train_data = lgb.Dataset(X_flat, label=y_train)

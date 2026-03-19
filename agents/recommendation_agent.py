@@ -1,4 +1,6 @@
-from typing import Optional
+import math
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from agents.base_agent import BaseAgent
@@ -7,6 +9,9 @@ from config import (
     MAX_RISK_PER_TRADE, DEFAULT_ACCOUNT_SIZE,
     ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER,
 )
+
+MIN_ATR_THRESHOLD = 0.0001
+WHIPSAW_COOLDOWN_DAYS = 3
 
 
 class RecommendationAgent(BaseAgent):
@@ -18,6 +23,7 @@ class RecommendationAgent(BaseAgent):
         super().__init__(name="RecommendationAgent")
         self.storage = Storage()
         self.account_size = account_size
+        self._last_signals: Dict[str, Tuple[str, datetime]] = {}  # pair -> (direction, timestamp)
 
     def run(self, input_data: dict) -> dict:
         predictions = input_data["predictions"]
@@ -63,6 +69,22 @@ class RecommendationAgent(BaseAgent):
 
     def _evaluate(self, pair: str, pred: dict, latest, levels: dict,
                   regime: dict) -> Optional[dict]:
+        direction = pred["direction"]
+        atr = latest["ATR"]
+
+        if atr < MIN_ATR_THRESHOLD:
+            self.logger.warning(f"ATR too low for {pair} ({atr:.6f} < {MIN_ATR_THRESHOLD}), skipping")
+            return None
+
+        last = self._last_signals.get(pair)
+        if last is not None:
+            last_dir, last_time = last
+            opposite = (last_dir == "UP" and direction == "DOWN") or \
+                       (last_dir == "DOWN" and direction == "UP")
+            if opposite and (datetime.utcnow() - last_time) < timedelta(days=WHIPSAW_COOLDOWN_DAYS):
+                self.logger.warning(f"Whipsaw detected for {pair}, skipping")
+                return None
+
         score = 0.0
         reasons = []
 
@@ -162,14 +184,25 @@ class RecommendationAgent(BaseAgent):
         # Apply regime position size adjustment
         position_size *= size_adj
 
+        sl_rounded = round(stop_loss, 5)
+        tp_rounded = round(take_profit, 5)
+        ps_rounded = round(position_size, 2)
+
+        for val, name in [(sl_rounded, "stop_loss"), (tp_rounded, "take_profit"), (ps_rounded, "position_size")]:
+            if not (math.isfinite(val) and val > 0):
+                self.logger.error(f"Invalid {name}={val} for {pair}, skipping signal")
+                return None
+
+        self._last_signals[pair] = (direction, datetime.utcnow())
+
         return {
             "pair": pair,
             "signal_type": signal_type,
             "confidence": min(score / 5.0, 0.95),
             "entry_price": current,
-            "stop_loss": round(stop_loss, 5),
-            "take_profit": round(take_profit, 5),
-            "position_size": round(position_size, 2),
+            "stop_loss": sl_rounded,
+            "take_profit": tp_rounded,
+            "position_size": ps_rounded,
             "reasons": reasons,
             "predicted_price": pred["predicted_price"],
             "regime": regime_name,

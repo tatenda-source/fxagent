@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 import ta
@@ -6,6 +7,8 @@ from config import (
     REGIME_ADX_PERIOD, REGIME_ADX_TRENDING,
     REGIME_VOLATILITY_LOOKBACK, REGIME_VOLATILITY_HIGH_MULT,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MarketRegime:
@@ -36,23 +39,40 @@ class MarketRegime:
                 }
             }
         """
-        if len(df) < max(REGIME_ADX_PERIOD * 2, REGIME_VOLATILITY_LOOKBACK + 10):
-            return MarketRegime._default_regime()
+        required_rows = max(REGIME_ADX_PERIOD * 2, REGIME_VOLATILITY_LOOKBACK + 10)
+        if not isinstance(df, pd.DataFrame) or len(df) < required_rows:
+            logger.warning(
+                f"Insufficient data for regime detection ({len(df) if isinstance(df, pd.DataFrame) else 0} rows, "
+                f"need {required_rows}). Returning unknown regime."
+            )
+            return MarketRegime._unknown_regime()
+
+        for col in ("High", "Low", "Close"):
+            if col not in df.columns:
+                logger.warning(f"Missing column '{col}' in DataFrame. Returning unknown regime.")
+                return MarketRegime._unknown_regime()
 
         result = {}
 
         # --- ADX for trend strength ---
-        adx_indicator = ta.trend.ADXIndicator(
-            df["High"], df["Low"], df["Close"], window=REGIME_ADX_PERIOD
-        )
-        adx = adx_indicator.adx().iloc[-1]
-        plus_di = adx_indicator.adx_pos().iloc[-1]
-        minus_di = adx_indicator.adx_neg().iloc[-1]
+        try:
+            adx_indicator = ta.trend.ADXIndicator(
+                df["High"], df["Low"], df["Close"], window=REGIME_ADX_PERIOD
+            )
+            adx = adx_indicator.adx().iloc[-1]
+            plus_di = adx_indicator.adx_pos().iloc[-1]
+            minus_di = adx_indicator.adx_neg().iloc[-1]
+        except Exception as e:
+            logger.warning(f"ADX calculation failed: {e}. Returning unknown regime.")
+            return MarketRegime._unknown_regime()
 
-        result["adx"] = float(adx) if not np.isnan(adx) else 0.0
+        adx_val = float(adx) if not np.isnan(adx) else 0.0
+        result["adx"] = float(np.clip(adx_val, 0.0, 100.0))
 
         # Trend direction from DI+/DI-
-        if plus_di > minus_di:
+        if np.isnan(plus_di) or np.isnan(minus_di):
+            result["trend_direction"] = "flat"
+        elif plus_di > minus_di:
             result["trend_direction"] = "up"
         elif minus_di > plus_di:
             result["trend_direction"] = "down"
@@ -60,11 +80,22 @@ class MarketRegime:
             result["trend_direction"] = "flat"
 
         # --- Volatility analysis ---
-        atr_series = ta.volatility.average_true_range(
-            df["High"], df["Low"], df["Close"], window=14
-        )
+        try:
+            atr_series = ta.volatility.average_true_range(
+                df["High"], df["Low"], df["Close"], window=14
+            )
+        except Exception as e:
+            logger.warning(f"ATR calculation failed: {e}. Returning unknown regime.")
+            return MarketRegime._unknown_regime()
+
         current_atr = atr_series.iloc[-1]
+        if np.isnan(current_atr) or current_atr <= 0:
+            current_atr = 0.0
+        else:
+            current_atr = max(current_atr, 0.0)
         median_atr = atr_series.tail(REGIME_VOLATILITY_LOOKBACK).median()
+        if np.isnan(median_atr) or median_atr <= 0:
+            median_atr = 0.0
         vol_ratio = current_atr / median_atr if median_atr > 0 else 1.0
 
         result["volatility_ratio"] = float(vol_ratio)
@@ -127,6 +158,23 @@ class MarketRegime:
     def _default_regime() -> dict:
         return {
             "regime": MarketRegime.RANGING,
+            "adx": 0.0,
+            "trend_direction": "flat",
+            "volatility_state": "normal",
+            "volatility_ratio": 1.0,
+            "confidence": 0.0,
+            "strategy_adjustments": {
+                "sl_multiplier_adj": 1.0,
+                "tp_multiplier_adj": 1.0,
+                "min_score_adj": 0.0,
+                "position_size_adj": 1.0,
+            },
+        }
+
+    @staticmethod
+    def _unknown_regime() -> dict:
+        return {
+            "regime": "unknown",
             "adx": 0.0,
             "trend_direction": "flat",
             "volatility_state": "normal",
