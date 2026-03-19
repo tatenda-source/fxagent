@@ -13,6 +13,31 @@ from config import (
 )
 
 
+class DirectionalMSELoss(nn.Module):
+    """MSE loss with a directional penalty.
+
+    Penalizes predictions that get the sign (direction) wrong more heavily
+    than those that get magnitude wrong. For log-return targets, the sign
+    directly maps to UP/DOWN — the thing we actually care about."""
+
+    def __init__(self, direction_weight: float = 0.3):
+        super().__init__()
+        self.direction_weight = direction_weight
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        mse = F.mse_loss(pred, target)
+
+        # Direction penalty: 1 when signs disagree, 0 when they agree
+        pred_sign = torch.sign(pred)
+        target_sign = torch.sign(target)
+        direction_wrong = (pred_sign != target_sign).float()
+
+        # Weight the penalty by how far off the magnitude is
+        direction_penalty = (direction_wrong * (pred - target).abs()).mean()
+
+        return mse + self.direction_weight * direction_penalty
+
+
 class TemporalAttention(nn.Module):
     """Multi-head temporal attention over LSTM outputs.
 
@@ -45,7 +70,7 @@ class TemporalAttention(nn.Module):
 
 
 class ForexLSTM(nn.Module):
-    """Multi-layer LSTM with temporal attention for forex price prediction."""
+    """Multi-layer LSTM with temporal attention for forex return prediction."""
 
     def __init__(
         self,
@@ -81,11 +106,11 @@ class ForexLSTM(nn.Module):
 
 class LSTMTrainer:
     """Handles training with early stopping, gradient clipping, LR scheduling,
-    and MC dropout inference for uncertainty estimation."""
+    directional loss, and MC dropout inference for uncertainty estimation."""
 
-    def __init__(self, model: ForexLSTM, lr: float = 0.001):
+    def __init__(self, model: ForexLSTM, lr: float = 0.001, direction_weight: float = 0.3):
         self.model = model
-        self.criterion = nn.MSELoss()
+        self.criterion = DirectionalMSELoss(direction_weight=direction_weight)
         self.optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min",
@@ -107,7 +132,7 @@ class LSTMTrainer:
     ) -> dict:
         """Train with validation, early stopping, gradient clipping, and LR scheduling.
 
-        Returns dict with train_losses, val_losses, stopped_epoch."""
+        Returns dict with train_losses, val_losses, stopped_epoch, direction_accuracy."""
         # Auto-split validation if not provided
         if X_val is None:
             val_size = int(len(X_train) * VALIDATION_SPLIT)
@@ -133,6 +158,7 @@ class LSTMTrainer:
         self.patience_counter = 0
         self.best_state_dict = None
         stopped_epoch = epochs
+        best_dir_acc = 0.0
 
         for epoch in range(epochs):
             # Training
@@ -154,12 +180,20 @@ class LSTMTrainer:
             if val_loader is not None:
                 self.model.eval()
                 val_loss = 0.0
+                all_pred, all_true = [], []
                 with torch.no_grad():
                     for X_batch, y_batch in val_loader:
                         pred = self.model(X_batch)
                         val_loss += self.criterion(pred, y_batch).item()
+                        all_pred.append(pred.numpy().flatten())
+                        all_true.append(y_batch.numpy().flatten())
                 avg_val = val_loss / len(val_loader)
                 val_losses.append(avg_val)
+
+                # Track directional accuracy
+                all_pred = np.concatenate(all_pred)
+                all_true = np.concatenate(all_true)
+                dir_acc = np.mean(np.sign(all_pred) == np.sign(all_true))
 
                 self.scheduler.step(avg_val)
 
@@ -167,6 +201,7 @@ class LSTMTrainer:
                 if avg_val < self.best_val_loss - EARLY_STOPPING_MIN_DELTA:
                     self.best_val_loss = avg_val
                     self.patience_counter = 0
+                    best_dir_acc = dir_acc
                     self.best_state_dict = {
                         k: v.clone() for k, v in self.model.state_dict().items()
                     }
@@ -184,6 +219,7 @@ class LSTMTrainer:
             "train_losses": train_losses,
             "val_losses": val_losses,
             "stopped_epoch": stopped_epoch,
+            "direction_accuracy": best_dir_acc,
         }
 
     def predict(self, X: np.ndarray) -> np.ndarray:

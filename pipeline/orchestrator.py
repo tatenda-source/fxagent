@@ -109,7 +109,7 @@ class Orchestrator:
         if feedback.get("retrain_pairs"):
             logger.warning(f"Retraining requested for: {feedback['retrain_pairs']}")
             for pair in feedback["retrain_pairs"]:
-                for suffix in ("_lstm_v2.pt", "_lstm.pt"):
+                for suffix in ("_lstm_v3.pt", "_gbm_v3.txt", "_lstm_v2.pt", "_lstm.pt"):
                     model_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}{suffix}")
                     if os.path.exists(model_path):
                         os.remove(model_path)

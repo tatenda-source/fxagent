@@ -78,9 +78,9 @@ class RecommendationAgent(BaseAgent):
         if regime_name != "unknown":
             reasons.append(f"Regime: {regime_name} (ADX={regime.get('adx', 0):.1f})")
 
-        # 1. ML prediction direction
-        if pred["confidence"] > 0.3:
-            score += pred["confidence"] * 2
+        # 1. ML prediction direction (v3: ensemble confidence is more calibrated)
+        if pred["confidence"] > 0.15:
+            score += pred["confidence"] * 2.5
             reasons.append(f"ML predicts {pred['direction']} ({pred['confidence']:.0%})")
 
         # 2. RSI confirmation

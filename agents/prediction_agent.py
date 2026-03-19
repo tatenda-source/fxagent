@@ -4,15 +4,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 
 from agents.base_agent import BaseAgent
-from models.lstm_model import ForexLSTM, LSTMTrainer
-from models.model_utils import prepare_sequences, inverse_scale_close
+from models.ensemble import EnsemblePredictor
+from models.model_utils import prepare_sequences, log_return_to_price
 from data.storage import Storage
 from config import MODEL_DIR, EPOCHS, BATCH_SIZE, LEARNING_RATE, MODEL_VERSION
 
 
 class PredictionAgent(BaseAgent):
-    """Agent 3: Trains/loads attention-LSTM models and predicts next close price.
-    Uses MC Dropout for uncertainty-based confidence scoring."""
+    """Agent 3: Trains/loads LSTM+GBM ensemble and predicts next-day log returns.
+
+    V3 improvements:
+    - Predicts log returns (stationary) instead of raw price
+    - Ensemble: LSTM (temporal) + LightGBM (feature interactions)
+    - Directional loss penalizes wrong-direction predictions
+    - Confidence from SNR + model agreement (not broken threshold)
+    """
 
     def __init__(self):
         super().__init__(name="PredictionAgent")
@@ -40,55 +46,53 @@ class PredictionAgent(BaseAgent):
         return {"predictions": predictions}
 
     def _predict_pair(self, pair: str, df) -> dict:
-        X_train, X_test, y_train, y_test, scaler = prepare_sequences(df)
+        result = prepare_sequences(df)
+        X_train, X_test, y_train, y_test, scaler, meta = result
 
         if len(X_train) < 10:
             self.logger.warning(f"Not enough data to train for {pair}")
             return None
 
         num_features = X_train.shape[2]
-        model = ForexLSTM(input_size=num_features)
-        trainer = LSTMTrainer(model, lr=LEARNING_RATE)
+        ensemble = EnsemblePredictor(num_features)
 
-        model_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}_lstm_v2.pt")
+        lstm_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}_lstm_v3.pt")
+        gbm_path = os.path.join(MODEL_DIR, f"{pair.replace('=', '_')}_gbm_v3.txt")
 
-        if os.path.exists(model_path):
+        if os.path.exists(lstm_path) and os.path.exists(gbm_path):
             try:
-                trainer.load(model_path)
-                self.logger.info(f"Loaded v2 model for {pair}")
+                ensemble.load(lstm_path, gbm_path)
+                self.logger.info(f"Loaded v3 ensemble for {pair}")
             except Exception as e:
                 self.logger.warning(f"Failed to load model for {pair}: {e}. Retraining...")
-                os.remove(model_path)
-                self._train_and_save(trainer, X_train, y_train, model_path, pair)
+                self._safe_remove(lstm_path)
+                self._safe_remove(gbm_path)
+                self._train_and_save(ensemble, X_train, y_train, lstm_path, gbm_path, pair)
         else:
-            self._train_and_save(trainer, X_train, y_train, model_path, pair)
+            self._train_and_save(ensemble, X_train, y_train, lstm_path, gbm_path, pair)
 
         # Predict using the last available sequence
         last_sequence = X_test[-1:] if len(X_test) > 0 else X_train[-1:]
 
-        # MC Dropout for uncertainty estimation
-        mean_pred, std_pred = trainer.predict_with_uncertainty(last_sequence)
-        pred_scaled = mean_pred[0]
-        pred_uncertainty = std_pred[0]
+        pred_return, direction, confidence, uncertainty = ensemble.predict_direction_confidence(
+            last_sequence
+        )
 
-        predicted_price = inverse_scale_close(pred_scaled, scaler, num_features)
-        current_price = float(df["Close"].iloc[-1])
-
-        direction = "UP" if predicted_price > current_price else "DOWN"
+        current_price = meta["last_close"]
+        predicted_price = log_return_to_price(pred_return, current_price)
         change_pct = abs(predicted_price - current_price) / current_price
-        confidence = self._compute_confidence(change_pct, pred_uncertainty)
 
         self.logger.info(
             f"{pair}: current={current_price:.5f}, predicted={predicted_price:.5f}, "
-            f"direction={direction}, confidence={confidence:.2f}, "
-            f"uncertainty={pred_uncertainty:.6f}"
+            f"return={pred_return:.6f}, direction={direction}, "
+            f"confidence={confidence:.2f}, uncertainty={uncertainty:.6f}"
         )
 
         self.storage.save_prediction({
             "pair": pair,
             "predicted_price": predicted_price,
             "prediction_horizon": "1d",
-            "model_version": MODEL_VERSION,
+            "model_version": "ensemble_v3",
         })
 
         return {
@@ -97,28 +101,32 @@ class PredictionAgent(BaseAgent):
             "direction": direction,
             "confidence": confidence,
             "change_pct": change_pct,
-            "uncertainty": pred_uncertainty,
+            "predicted_return": pred_return,
+            "uncertainty": uncertainty,
         }
 
-    def _train_and_save(self, trainer, X_train, y_train, model_path, pair):
-        self.logger.info(f"Training v2 model for {pair}...")
-        result = trainer.train(X_train, y_train, epochs=EPOCHS, batch_size=BATCH_SIZE)
-        trainer.save(model_path)
-        final_train = result["train_losses"][-1]
-        final_val = result["val_losses"][-1] if result["val_losses"] else "N/A"
+    def _train_and_save(self, ensemble, X_train, y_train, lstm_path, gbm_path, pair):
+        self.logger.info(f"Training v3 ensemble for {pair}...")
+        result = ensemble.train(X_train, y_train)
+
+        ensemble.save(lstm_path, gbm_path)
+
+        lstm_r = result["lstm_result"]
+        final_train = lstm_r["train_losses"][-1]
+        final_val = lstm_r["val_losses"][-1] if lstm_r["val_losses"] else "N/A"
+
         self.logger.info(
-            f"Model saved for {pair}. "
-            f"Stopped epoch: {result['stopped_epoch']}, "
-            f"Train loss: {final_train:.6f}, Val loss: {final_val}"
+            f"Ensemble saved for {pair}. "
+            f"LSTM dir_acc: {result['lstm_dir_acc']:.1%}, "
+            f"GBM dir_acc: {result['gbm_dir_acc']:.1%}, "
+            f"weights: LSTM={result['lstm_weight']:.2f} GBM={result['gbm_weight']:.2f}, "
+            f"stopped_epoch: {lstm_r['stopped_epoch']}, "
+            f"train_loss: {final_train:.6f}, val_loss: {final_val}"
         )
 
     @staticmethod
-    def _compute_confidence(change_pct: float, uncertainty: float) -> float:
-        """Compute confidence from price change magnitude and MC dropout uncertainty.
-
-        Low uncertainty + large change = high confidence.
-        High uncertainty = low confidence regardless of change."""
-        signal_strength = min(1.0, change_pct * 15)
-        uncertainty_penalty = min(1.0, uncertainty / 0.03)
-        confidence = signal_strength * (1.0 - uncertainty_penalty)
-        return max(0.05, min(0.95, confidence))
+    def _safe_remove(path: str):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
