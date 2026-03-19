@@ -8,6 +8,7 @@ from data.storage import Storage
 from config import (
     MAX_RISK_PER_TRADE, DEFAULT_ACCOUNT_SIZE,
     ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER,
+    TRADEABLE_PAIRS, POSITION_SIZE_BASE, POSITION_SIZE_MAX, POSITION_SIZE_MIN,
 )
 
 MIN_ATR_THRESHOLD = 0.0001
@@ -24,6 +25,9 @@ class RecommendationAgent(BaseAgent):
         self.storage = Storage()
         self.account_size = account_size
         self._last_signals: Dict[str, Tuple[str, datetime]] = {}  # pair -> (direction, timestamp)
+        self._trade_count_today = 0
+        self._trade_date = None
+        self.MAX_TRADES_PER_DAY = 25  # Down from ~80
 
     def run(self, input_data: dict) -> dict:
         predictions = input_data["predictions"]
@@ -69,6 +73,19 @@ class RecommendationAgent(BaseAgent):
 
     def _evaluate(self, pair: str, pred: dict, latest, levels: dict,
                   regime: dict) -> Optional[dict]:
+        if pair not in TRADEABLE_PAIRS:
+            self.logger.debug(f"Pair {pair} not in tradeable set, skipping")
+            return None
+
+        # Daily trade frequency limiter
+        today = datetime.utcnow().date()
+        if self._trade_date != today:
+            self._trade_date = today
+            self._trade_count_today = 0
+        if self._trade_count_today >= self.MAX_TRADES_PER_DAY:
+            self.logger.info(f"Daily trade limit reached")
+            return None
+
         direction = pred["direction"]
         atr = latest["ATR"]
 
@@ -84,6 +101,25 @@ class RecommendationAgent(BaseAgent):
             if opposite and (datetime.utcnow() - last_time) < timedelta(days=WHIPSAW_COOLDOWN_DAYS):
                 self.logger.warning(f"Whipsaw detected for {pair}, skipping")
                 return None
+
+        # Regime trade gating
+        from risk.regime import MarketRegime
+        tradeable, gate_reason = MarketRegime.is_tradeable_regime(regime)
+        if not tradeable:
+            self.logger.info(f"Regime gate blocked {pair}: {gate_reason}")
+            return None
+
+        # Trade quality filter
+        from risk.trade_filter import TradeFilter
+        tf = TradeFilter()
+        predicted_return = pred.get("predicted_return", 0)
+        passes, rejections = tf.filter_trade(
+            pair, direction, predicted_return, pred["confidence"],
+            latest, datetime.utcnow(),
+        )
+        if not passes:
+            self.logger.info(f"Trade filter blocked {pair}: {', '.join(rejections)}")
+            return None
 
         score = 0.0
         reasons = []
@@ -177,11 +213,12 @@ class RecommendationAgent(BaseAgent):
             stop_loss = current + (atr * effective_sl_mult)
             take_profit = current - (atr * effective_tp_mult)
 
+        # Dynamic position sizing: confidence-weighted
+        conf_score = min(score / 5.0, 0.95)  # the signal confidence
+        dynamic_risk = POSITION_SIZE_MIN + (POSITION_SIZE_MAX - POSITION_SIZE_MIN) * conf_score
         risk_per_unit = abs(current - stop_loss)
-        max_loss = self.account_size * MAX_RISK_PER_TRADE
+        max_loss = self.account_size * dynamic_risk
         position_size = max_loss / risk_per_unit if risk_per_unit > 0 else 0
-
-        # Apply regime position size adjustment
         position_size *= size_adj
 
         sl_rounded = round(stop_loss, 5)
@@ -194,6 +231,7 @@ class RecommendationAgent(BaseAgent):
                 return None
 
         self._last_signals[pair] = (direction, datetime.utcnow())
+        self._trade_count_today += 1
 
         return {
             "pair": pair,

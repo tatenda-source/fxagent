@@ -88,7 +88,7 @@ ROC_PERIOD = 10
 MFI_PERIOD = 14
 
 # Risk Management
-MAX_RISK_PER_TRADE = 0.02
+MAX_RISK_PER_TRADE = 0.01
 DEFAULT_ACCOUNT_SIZE = 10000
 ATR_SL_MULTIPLIER = 1.5
 ATR_TP_MULTIPLIER = 2.5
@@ -104,6 +104,31 @@ REGIME_ADX_PERIOD = 14              # ADX period for trend strength
 REGIME_ADX_TRENDING = 25            # ADX > 25 = trending market
 REGIME_VOLATILITY_LOOKBACK = 20     # Days for volatility regime
 REGIME_VOLATILITY_HIGH_MULT = 1.5   # ATR > 1.5x median = high volatility
+
+# Tradeable pairs — only pairs with proven backtest edge
+# Based on 5m backtest results (2026-03-19)
+TRADEABLE_PAIRS = [
+    "GBPUSD=X",   # Sharpe 6.33, +137% return
+    "AUDUSD=X",   # Sharpe 5.78, +129% return
+    "USDJPY=X",   # Sharpe 2.47, +21% return
+    "SI=F",        # Sharpe 2.86, +21% return
+    "USDCHF=X",   # Sharpe 1.49, +7% return
+]
+
+# Pairs still tracked for analysis but NOT traded
+WATCH_ONLY_PAIRS = [
+    "EURUSD=X",
+    "USDCAD=X",
+    "GC=F",
+    "PL=F",
+    "PA=F",
+    "HG=F",
+]
+
+# Dynamic Position Sizing
+POSITION_SIZE_BASE = 0.01       # 1% base risk (down from 2%)
+POSITION_SIZE_MAX = 0.015       # Max 1.5% in strong regimes
+POSITION_SIZE_MIN = 0.003       # Min 0.3% in weak regimes
 
 # Scheduling
 UPDATE_INTERVAL_MINUTES = 60

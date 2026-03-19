@@ -7,6 +7,7 @@ Uses walk-forward approach: model only sees past data at each prediction point.
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -18,7 +19,8 @@ from models.ensemble import EnsemblePredictor
 from models.model_utils import FEATURE_COLS, log_return_to_price
 from backtesting.engine import BacktestEngine
 from backtesting.metrics import compute_metrics
-from config import ALL_PAIRS, SEQUENCE_LENGTH, PAIR_DISPLAY
+from risk.trade_filter import TradeFilter
+from config import ALL_PAIRS, TRADEABLE_PAIRS, SEQUENCE_LENGTH, PAIR_DISPLAY
 
 # 5m-specific config
 WARMUP_BARS = 200          # Indicator warmup
@@ -92,8 +94,9 @@ def train_ensemble_on_slice(df_train: pd.DataFrame, seq_length: int = SEQUENCE_L
     return ensemble, scaler, result
 
 
-def make_strategy_fn(ensemble, scaler, feature_cols, seq_length, confidence_threshold):
-    """Create a strategy function that uses the trained ensemble."""
+def make_strategy_fn(ensemble, scaler, feature_cols, seq_length, confidence_threshold, pair):
+    """Create a strategy function that uses the trained ensemble + trade filter."""
+    trade_filter = TradeFilter()
 
     def strategy(row, prev_rows):
         if len(prev_rows) < seq_length:
@@ -122,6 +125,14 @@ def make_strategy_fn(ensemble, scaler, feature_cols, seq_length, confidence_thre
 
         atr = float(row["ATR"]) if "ATR" in row.index and not np.isnan(row["ATR"]) else None
         if atr is None or atr <= 0:
+            return None
+
+        # Apply trade filter
+        timestamp = row.name if hasattr(row, "name") else datetime.utcnow()
+        passes, _ = trade_filter.filter_trade(
+            pair, direction, pred_return, confidence, row, timestamp
+        )
+        if not passes:
             return None
 
         action = "BUY" if direction == "UP" else "SELL"
@@ -161,7 +172,7 @@ def run_backtest_for_pair(pair: str, df: pd.DataFrame) -> dict:
     )
 
     # Create strategy function
-    strategy_fn = make_strategy_fn(ensemble, scaler, available, SEQUENCE_LENGTH, CONFIDENCE_THRESHOLD)
+    strategy_fn = make_strategy_fn(ensemble, scaler, available, SEQUENCE_LENGTH, CONFIDENCE_THRESHOLD, pair)
 
     # Run backtest on TEST portion only
     # We need to pass the full dataframe but only count trades from split_idx onward
@@ -246,8 +257,8 @@ def main():
     logger.info("5-MINUTE BACKTEST — V3 ENSEMBLE")
     logger.info("=" * 60)
 
-    # Fetch data
-    data = fetch_5m_data(ALL_PAIRS)
+    # Only test tradeable pairs
+    data = fetch_5m_data(TRADEABLE_PAIRS)
 
     if not data:
         logger.error("No data fetched. Aborting.")

@@ -189,6 +189,34 @@ class MarketRegime:
         }
 
     @staticmethod
+    def is_tradeable_regime(regime_info: dict) -> tuple:
+        """Determine if a regime is suitable for trading.
+
+        Returns (tradeable: bool, reason: str)
+
+        Rules:
+        - VOLATILE regime with vol_ratio > 2.0: NOT tradeable ("extreme volatility")
+        - RANGING regime with ADX < 12: NOT tradeable ("dead market")
+        - Any regime with confidence < 0.3: NOT tradeable ("unclear regime")
+        - Everything else: tradeable
+        """
+        regime = regime_info.get("regime", "unknown")
+        vol_ratio = regime_info.get("volatility_ratio", 1.0)
+        adx = regime_info.get("adx", 0.0)
+        confidence = regime_info.get("confidence", 0.0)
+
+        if regime == MarketRegime.VOLATILE and vol_ratio > 2.0:
+            return False, "extreme volatility"
+
+        if regime == MarketRegime.RANGING and adx < 12:
+            return False, "dead market"
+
+        if confidence < 0.3:
+            return False, "unclear regime"
+
+        return True, ""
+
+    @staticmethod
     def detect_all(ohlcv_data: dict) -> dict:
         """Detect regime for all pairs. Returns {pair: regime_dict}."""
         regimes = {}
