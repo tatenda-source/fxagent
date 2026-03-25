@@ -177,7 +177,7 @@ class TradeFilter:
 
         # --- Noise filter ---
         close = _get(latest_row, "Close")
-        atr = atr_current if atr_current is not None else _get(latest_row, "ATR")
+        atr = _get(latest_row, "ATR")
         if close is not None and atr is not None:
             if not self.passes_noise_filter(predicted_return, atr, close):
                 noise_floor = atr / close if close > 0 else 0
