@@ -132,3 +132,23 @@ POSITION_SIZE_MIN = 0.003       # Min 0.3% in weak regimes
 
 # Scheduling
 UPDATE_INTERVAL_MINUTES = 60
+
+# ===== LLM Configuration (Hybrid Pipeline) =====
+# Provider: "openai", "anthropic", or "ollama"
+LLM_PROVIDER = "openai"
+
+# Two-tier LLM strategy (TradingAgents pattern):
+# - Quick think: for analysts, debaters (fast, cheap)
+# - Deep think: for judges, research managers (accurate, slower)
+LLM_QUICK_MODEL = None      # None = provider default (e.g., gpt-4o-mini)
+LLM_DEEP_MODEL = None       # None = provider default (e.g., gpt-4o-mini)
+
+# Set to False to run quantitative-only mode (no LLM API calls)
+ENABLE_LLM = True
+
+# Debate settings
+MAX_DEBATE_ROUNDS = 1        # 1 = one bull case + one bear case + judge
+                             # 2+ = additional rebuttal rounds
+
+# Memory settings
+MEMORY_DIR = str(BASE_DIR / "memory" / "trade_memories")

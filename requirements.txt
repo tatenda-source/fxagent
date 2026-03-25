@@ -18,6 +18,17 @@ plotly>=5.18.0
 # Scheduling
 apscheduler>=3.10.0
 
+# LLM Providers (install the one you need)
+openai>=1.0.0
+# anthropic>=0.30.0        # Uncomment for Claude
+# requests>=2.31.0         # Uncomment for Ollama
+
+# Memory / Retrieval
+rank-bm25>=0.2.2
+
+# LightGBM (ensemble predictor)
+lightgbm>=4.0.0
+
 # Utilities
 python-dotenv>=1.0.0
 loguru>=0.7.0
